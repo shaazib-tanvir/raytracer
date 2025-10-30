@@ -3,6 +3,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <ctime>
+#include <array>
 #include <types.hpp>
 #include <glad/gl.h>
 #include <GLFW/glfw3.h>
@@ -109,6 +110,139 @@ void print_device_info() {
 		printf("L2 Cache: %dB\n", prop.l2CacheSize);
 	}
 	printf("=============================================\n");
+}
+
+__device__
+static float3 add_float3(float3 a, float3 b) {
+	return make_float3(a.x + b.x, a.y + b.y, a.z + b.z);
+}
+
+__device__
+static float3 sub_float3(float3 a, float3 b) {
+	return make_float3(a.x - b.x, a.y - b.y, a.z - b.z);
+}
+
+__device__
+static float3 scalar_mul(f32 x, float3 a) {
+	return make_float3(a.x * x, a.y * x, a.z * x);
+}
+
+__device__
+static f32 dot_float3(float3 a, float3 b) {
+	return a.x * b.x + a.y * b.y + a.z * b.z;
+}
+
+__device__
+static f32 norm2(float3 a) {
+	return dot_float3(a, a);
+}
+
+__device__
+static float3 normalize(float3 a) {
+	f32 factor = rsqrtf(norm2(a));
+	return scalar_mul(factor, a);
+}
+
+__host__
+__device__
+struct Ray {
+	float3 origin;
+	float3 direction;
+};
+
+__host__
+__device__
+struct Material {
+	f32 refractive_index;
+	float3 color;
+};
+
+__host__
+__device__
+struct IntersectionResult {
+	bool intersected;
+	float3 normal;
+	f32 t;
+	Material material;
+};
+
+__host__
+__device__
+struct Plane {
+	float3 point;
+	float3 normal;
+	Material material;
+
+	__device__
+	IntersectionResult intersect(Ray ray);
+};
+
+__host__
+__device__
+struct Sphere {
+	float3 center;
+	f32 radius;
+	Material material;
+
+	__device__
+	std::array<IntersectionResult, 2> intersect(Ray ray);
+	__device__
+	float3 calc_normal(float3 position);
+};
+
+__device__
+IntersectionResult Plane::intersect(Ray ray) {
+	IntersectionResult result {};
+	f32 t = dot_float3(add_float3(ray.origin, point), normal) / dot_float3(ray.direction,  normal);
+	result.t = t;
+	result.normal = normal;
+	result.intersected = t > 0.0f;
+	result.material = material;
+
+	return result;
+}
+
+__device__
+float3 Sphere::calc_normal(float3 position) {
+	float3 displacement = sub_float3(position, center);
+	return normalize(displacement);
+}
+
+__device__
+std::array<IntersectionResult, 2> Sphere::intersect(Ray ray) {
+	IntersectionResult result0 {};
+	IntersectionResult result1 {};
+	f32 a = 1.0f;
+	f32 b = 2.0f*dot_float3(ray.direction, sub_float3(ray.origin, center));
+	f32 c = norm2(sub_float3(ray.origin, center)) - radius*radius;
+
+	if (b*b-4.0f*a*c < 0.0f) {
+		result0.intersected = false;
+		result1.intersected = false;
+	} else {
+		result0.intersected = true;
+		result0.material = material;
+		f32 t0 = (-b + sqrtf(b*b-4*a*c)) / (2.0f * a);
+		result0.t = t0;
+		float3 position0 = add_float3(ray.origin, scalar_mul(t0, ray.direction));
+		result0.normal = calc_normal(position0);
+
+		result1.intersected = true;
+		result1.material = material;
+		f32 t1 = (-b - sqrtf(b*b-4*a*c)) / (2.0f * a);
+		result1.t = t1;
+		float3 position1 = add_float3(ray.origin, scalar_mul(t1, ray.direction));
+		result1.normal = calc_normal(position1);
+	}
+
+	std::array<IntersectionResult, 2> result {result0, result1};
+	return result;
+}
+
+constexpr u32 SAMPLES_PER_FRAME = 64;
+
+__global__
+void draw(float* radiance) {
 }
 
 static void cursor_pos_callback(GLFWwindow* window, double xpos, double ypos) {
