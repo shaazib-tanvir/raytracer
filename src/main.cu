@@ -9,6 +9,7 @@
 #include <GLFW/glfw3.h>
 #include <cuda_gl_interop.h>
 #include <cuda_runtime_api.h>
+#include <curand_kernel.h>
 
 struct WindowData {
 	int framebuffer_width;
@@ -113,6 +114,14 @@ void print_device_info() {
 }
 
 __device__
+struct Matrix4 {
+	float4 x;
+	float4 y;
+	float4 z;
+	float4 w;
+};
+
+__device__
 static float3 add_float3(float3 a, float3 b) {
 	return make_float3(a.x + b.x, a.y + b.y, a.z + b.z);
 }
@@ -133,6 +142,11 @@ static f32 dot_float3(float3 a, float3 b) {
 }
 
 __device__
+static f32 dot_float4(float4 a, float4 b) {
+	return a.x * b.x + a.y * b.y + a.z * b.z;
+}
+
+__device__
 static f32 norm2(float3 a) {
 	return dot_float3(a, a);
 }
@@ -141,6 +155,70 @@ __device__
 static float3 normalize(float3 a) {
 	f32 factor = rsqrtf(norm2(a));
 	return scalar_mul(factor, a);
+}
+
+__device__
+static float4 to_projective(float3 a) {
+	return make_float4(a.x, a.y, a.z, 1.0f);
+}
+
+__device__
+static float3 from_projective(float4 a) {
+	return make_float3(a.x / a.w, a.y / a.w, a.z / a.w);
+}
+
+__device__
+static float4 apply_mat4(Matrix4 mat, float4 vector) {
+	return make_float4(dot_float4(mat.x, vector),
+			dot_float4(mat.y, vector),
+			dot_float4(mat.z, vector),
+			dot_float4(mat.w, vector));
+}
+
+__device__
+static Matrix4 mat_mul4(Matrix4 mat0, Matrix4 mat1) {
+	Matrix4 result{}; 
+	result.x.x = dot_float4(mat0.x, make_float4(mat1.x.x, mat1.y.x, mat1.z.x, mat1.w.x));
+	result.x.y = dot_float4(mat0.x, make_float4(mat1.y.x, mat1.y.y, mat1.y.z, mat1.y.w));
+	result.x.z = dot_float4(mat0.x, make_float4(mat1.z.x, mat1.z.y, mat1.z.z, mat1.z.w));
+	result.x.w = dot_float4(mat0.x, make_float4(mat1.w.x, mat1.w.y, mat1.w.z, mat1.w.w));
+
+	result.y.x = dot_float4(mat0.y, make_float4(mat1.x.x, mat1.y.x, mat1.z.x, mat1.w.x));
+	result.y.y = dot_float4(mat0.y, make_float4(mat1.y.x, mat1.y.y, mat1.y.z, mat1.y.w));
+	result.y.z = dot_float4(mat0.y, make_float4(mat1.z.x, mat1.z.y, mat1.z.z, mat1.z.w));
+	result.y.w = dot_float4(mat0.y, make_float4(mat1.w.x, mat1.w.y, mat1.w.z, mat1.w.w));
+
+	result.z.x = dot_float4(mat0.z, make_float4(mat1.x.x, mat1.y.x, mat1.z.x, mat1.w.x));
+	result.z.y = dot_float4(mat0.z, make_float4(mat1.y.x, mat1.y.y, mat1.y.z, mat1.y.w));
+	result.z.z = dot_float4(mat0.z, make_float4(mat1.z.x, mat1.z.y, mat1.z.z, mat1.z.w));
+	result.z.w = dot_float4(mat0.z, make_float4(mat1.w.x, mat1.w.y, mat1.w.z, mat1.w.w));
+
+	result.w.x = dot_float4(mat0.w, make_float4(mat1.x.x, mat1.y.x, mat1.z.x, mat1.w.x));
+	result.w.y = dot_float4(mat0.w, make_float4(mat1.y.x, mat1.y.y, mat1.y.z, mat1.y.w));
+	result.w.z = dot_float4(mat0.w, make_float4(mat1.z.x, mat1.z.y, mat1.z.z, mat1.z.w));
+	result.w.w = dot_float4(mat0.w, make_float4(mat1.w.x, mat1.w.y, mat1.w.z, mat1.w.w));
+
+	return result;
+}
+
+__device__
+static Matrix4 scale_mat4(f32 scale) {
+	Matrix4 result {};
+	result.x.x = scale;
+	result.y.y = scale;
+	result.z.z = scale;
+	result.w.w = 1.0f;
+	return result;
+}
+
+__device__
+static Matrix4 rotation_mat4(f32 yaw, f32 pitch, f32 roll) {
+	Matrix4 result {};
+	result.x.x = __cosf(pitch) * __cosf(yaw);
+	result.x.y = -__sinf(pitch);
+	result.x.z = __cosf(pitch) * __sinf(yaw);
+	result.w.w = 1.0f;
+	return result;
 }
 
 __host__
@@ -240,9 +318,26 @@ std::array<IntersectionResult, 2> Sphere::intersect(Ray ray) {
 }
 
 constexpr u32 SAMPLES_PER_FRAME = 64;
+constexpr f32 SCALE = 1.0f;
+constexpr u64 SEED = 926831508;
 
 __global__
-void draw(float* radiance) {
+void draw(float* framebuffer, i32 width, i32 height, f32 samples_count) {
+	curandStateXORWOW_t state;
+	curand_init(SEED + threadIdx.x + blockIdx.x * blockDim.x, 0, (u32) samples_count, &state);
+
+	for (u32 i = threadIdx.x + blockIdx.x * blockDim.x; i < width * height; i += blockDim.x * gridDim.x) {
+		i32 x_idx = i % width;
+		i32 y_idx = i / width;
+		f32 screen_x = (f32) x_idx / width - .5;
+		f32 screen_y = (f32) y_idx / width - (f32) .5 * height / width;
+		// for (u32 i = 0; i < SAMPLES_PER_FRAME; i++) {
+		// }
+
+		// framebuffer[3*i] = curand_uniform(&state);
+		// framebuffer[3*i+1] = curand_uniform(&state);
+		// framebuffer[3*i+2] = curand_uniform(&state);
+	}
 }
 
 static void cursor_pos_callback(GLFWwindow* window, double xpos, double ypos) {
@@ -307,6 +402,7 @@ int main() {
 	glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
 	f32 delta = 0.0f;
+	f32 samples_count = 0.0f;
 	while (!glfwWindowShouldClose(window)) {
 		auto start = glfwGetTime();
 		glfwPollEvents();
@@ -316,6 +412,7 @@ int main() {
 		f32* pixel_buffer;
 		size_t resource_size;
 		panic_err(cudaGraphicsResourceGetMappedPointer((void**)&pixel_buffer, &resource_size, pbo_resource));
+		draw<<<32, 256>>>(pixel_buffer, window_data.framebuffer_width, window_data.framebuffer_height, samples_count);
 
 		panic_err(cudaGraphicsUnmapResources(1, &pbo_resource, 0));
 
@@ -336,7 +433,8 @@ int main() {
 
 		glfwSwapBuffers(window);
 		delta = glfwGetTime() - start;
-		log(LogLevel::DEBUG, "%f\n", delta);
+		log(LogLevel::DEBUG, "%fms\n", 1e3*delta);
+		samples_count += SAMPLES_PER_FRAME;
 	}
 
 	glfwDestroyWindow(window);
