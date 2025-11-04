@@ -1,103 +1,25 @@
 #include <cassert>
-#include <cstdarg>
 #include <cstdio>
 #include <cstdlib>
 #include <ctime>
-#include <array>
 #include <types.hpp>
 #include <glad/gl.h>
 #include <GLFW/glfw3.h>
 #include <cuda_gl_interop.h>
 #include <cuda_runtime_api.h>
 #include <curand_kernel.h>
+#include <vector.cuh>
+#include <base.cuh>
+#include <matrix.cuh>
 
 struct WindowData {
 	int framebuffer_width;
 	int framebuffer_height;
 };
 
-enum class LogLevel {
-	DEBUG,
-	INFO,
-	WARN,
-	ERROR
-};
+static void print_device_info();
 
-void log(LogLevel level, char const* format, ...);
-void panic(char* message, ...);
-void panic_err(cudaError_t error);
-void print_device_info();
-
-void log(LogLevel level, char const* format, ...) {
-	switch (level) {
-		case LogLevel::DEBUG:
-			{
-#if LOG_LEVEL <= 0
-			printf("[DEBUG]: ");
-			std::va_list args;
-			va_start(args, format);
-			std::vprintf(format, args);
-			va_end(args);
-#endif
-			break;
-			}
-		case LogLevel::INFO:
-			{
-#if LOG_LEVEL <= 1
-			printf("[INFO]: ");
-			std::va_list args;
-			va_start(args, format);
-			std::vprintf(format, args);
-			va_end(args);
-#endif
-
-			break;
-			}
-		case LogLevel::WARN:
-			{
-#if LOG_LEVEL <= 2
-			printf("[WARN]: ");
-			std::va_list args;
-			va_start(args, format);
-			std::vprintf(format, args);
-			va_end(args);
-
-#endif
-			break;
-			}
-		case LogLevel::ERROR:
-			{
-#if LOG_LEVEL <= 3
-
-			printf("[ERROR]: ");
-			std::va_list args;
-			va_start(args, format);
-			std::vprintf(format, args);
-			va_end(args);
-#endif
-
-			break;
-			}
-	}
-
-}
-
-void panic(const char* message, ...) {
-	std::va_list args;
-	va_start(args, message);
-	std::vprintf(message, args);
-	va_end(args);
-	exit(1);
-}
-
-void panic_err(cudaError_t error) {
-	if (error != cudaSuccess) {
-		printf("error: %s\n", cudaGetErrorString(error));
-		exit(1);
-	}
-}
-
-void print_device_info() {
+static void print_device_info() {
 	int device_count;
 	panic_err(cudaGetDeviceCount(&device_count));
 	for (int i = 0; i < device_count; i++) {
@@ -113,216 +35,200 @@ void print_device_info() {
 	printf("=============================================\n");
 }
 
-__device__
-struct Matrix4 {
-	float4 x;
-	float4 y;
-	float4 z;
-	float4 w;
-};
-
-__device__
-static float3 add_float3(float3 a, float3 b) {
-	return make_float3(a.x + b.x, a.y + b.y, a.z + b.z);
-}
-
-__device__
-static float3 sub_float3(float3 a, float3 b) {
-	return make_float3(a.x - b.x, a.y - b.y, a.z - b.z);
-}
-
-__device__
-static float3 scalar_mul(f32 x, float3 a) {
-	return make_float3(a.x * x, a.y * x, a.z * x);
-}
-
-__device__
-static f32 dot_float3(float3 a, float3 b) {
-	return a.x * b.x + a.y * b.y + a.z * b.z;
-}
-
-__device__
-static f32 dot_float4(float4 a, float4 b) {
-	return a.x * b.x + a.y * b.y + a.z * b.z;
-}
-
-__device__
-static f32 norm2(float3 a) {
-	return dot_float3(a, a);
-}
-
-__device__
-static float3 normalize(float3 a) {
-	f32 factor = rsqrtf(norm2(a));
-	return scalar_mul(factor, a);
-}
-
-__device__
-static float4 to_projective(float3 a) {
-	return make_float4(a.x, a.y, a.z, 1.0f);
-}
-
-__device__
-static float3 from_projective(float4 a) {
-	return make_float3(a.x / a.w, a.y / a.w, a.z / a.w);
-}
-
-__device__
-static float4 apply_mat4(Matrix4 mat, float4 vector) {
-	return make_float4(dot_float4(mat.x, vector),
-			dot_float4(mat.y, vector),
-			dot_float4(mat.z, vector),
-			dot_float4(mat.w, vector));
-}
-
-__device__
-static Matrix4 mat_mul4(Matrix4 mat0, Matrix4 mat1) {
-	Matrix4 result{}; 
-	result.x.x = dot_float4(mat0.x, make_float4(mat1.x.x, mat1.y.x, mat1.z.x, mat1.w.x));
-	result.x.y = dot_float4(mat0.x, make_float4(mat1.y.x, mat1.y.y, mat1.y.z, mat1.y.w));
-	result.x.z = dot_float4(mat0.x, make_float4(mat1.z.x, mat1.z.y, mat1.z.z, mat1.z.w));
-	result.x.w = dot_float4(mat0.x, make_float4(mat1.w.x, mat1.w.y, mat1.w.z, mat1.w.w));
-
-	result.y.x = dot_float4(mat0.y, make_float4(mat1.x.x, mat1.y.x, mat1.z.x, mat1.w.x));
-	result.y.y = dot_float4(mat0.y, make_float4(mat1.y.x, mat1.y.y, mat1.y.z, mat1.y.w));
-	result.y.z = dot_float4(mat0.y, make_float4(mat1.z.x, mat1.z.y, mat1.z.z, mat1.z.w));
-	result.y.w = dot_float4(mat0.y, make_float4(mat1.w.x, mat1.w.y, mat1.w.z, mat1.w.w));
-
-	result.z.x = dot_float4(mat0.z, make_float4(mat1.x.x, mat1.y.x, mat1.z.x, mat1.w.x));
-	result.z.y = dot_float4(mat0.z, make_float4(mat1.y.x, mat1.y.y, mat1.y.z, mat1.y.w));
-	result.z.z = dot_float4(mat0.z, make_float4(mat1.z.x, mat1.z.y, mat1.z.z, mat1.z.w));
-	result.z.w = dot_float4(mat0.z, make_float4(mat1.w.x, mat1.w.y, mat1.w.z, mat1.w.w));
-
-	result.w.x = dot_float4(mat0.w, make_float4(mat1.x.x, mat1.y.x, mat1.z.x, mat1.w.x));
-	result.w.y = dot_float4(mat0.w, make_float4(mat1.y.x, mat1.y.y, mat1.y.z, mat1.y.w));
-	result.w.z = dot_float4(mat0.w, make_float4(mat1.z.x, mat1.z.y, mat1.z.z, mat1.z.w));
-	result.w.w = dot_float4(mat0.w, make_float4(mat1.w.x, mat1.w.y, mat1.w.z, mat1.w.w));
-
-	return result;
-}
-
-__device__
-static Matrix4 scale_mat4(f32 scale) {
-	Matrix4 result {};
-	result.x.x = scale;
-	result.y.y = scale;
-	result.z.z = scale;
-	result.w.w = 1.0f;
-	return result;
-}
-
-__device__
-static Matrix4 rotation_mat4(f32 yaw, f32 pitch, f32 roll) {
-	Matrix4 result {};
-	result.x.x = __cosf(pitch) * __cosf(yaw);
-	result.x.y = -__sinf(pitch);
-	result.x.z = __cosf(pitch) * __sinf(yaw);
-	result.w.w = 1.0f;
-	return result;
-}
-
-__host__
-__device__
 struct Ray {
-	float3 origin;
-	float3 direction;
+	Vector<3> origin;
+	Vector<3> direction;
+
+	__device__
+	static Ray init(Vector<3> origin, Vector<3> direction);
 };
 
-__host__
 __device__
+Ray Ray::init(Vector<3> origin, Vector<3> direction) {
+	Ray ray;
+	ray.origin = origin;
+	ray.direction = direction;
+	return ray;
+}
+
 struct Material {
-	f32 refractive_index;
-	float3 color;
+	f32 emissivity;
+	Vector<3> color;
+
+	static Material init(f32 emissivity, Vector<3> color);
 };
 
-__host__
-__device__
 struct IntersectionResult {
-	bool intersected;
-	float3 normal;
+	Vector<3> position;
+	Vector<3> normal;
+	Material mat;
 	f32 t;
-	Material material;
+	bool intersected;
 };
 
-__host__
-__device__
-struct Plane {
-	float3 point;
-	float3 normal;
+Material Material::init(f32 emissivity, Vector<3> color) {
+	Material material;
+	material.color = color;
+	material.emissivity = emissivity;
+
+	return material;
+}
+
+constexpr f32 THRESHOLD = 1e-4f;
+
+struct Sphere {
+	Vector<3> center;
+	f32 radius;
 	Material material;
 
+	static Sphere init(Vector<3> center, f32 radius, Material material);
+	__device__
+	Array<IntersectionResult, 2> intersect(Ray ray);
+};
+
+Sphere Sphere::init(Vector<3> center, f32 radius, Material material) {
+	Sphere sphere;
+	sphere.center = center;
+	sphere.radius = radius;
+	sphere.material = material;
+
+	return sphere;
+}
+
+struct Plane {
+	Vector<3> point;
+	Vector<3> normal;
+	Material material;
+
+	static Plane init(Vector<3> point, Vector<3> normal, Material material);
 	__device__
 	IntersectionResult intersect(Ray ray);
 };
 
-__host__
-__device__
-struct Sphere {
-	float3 center;
-	f32 radius;
-	Material material;
+Plane Plane::init(Vector<3> point, Vector<3> normal, Material material) {
+	Plane plane;
+	plane.normal = normal;
+	plane.material = material;
+	plane.point = point;
 
-	__device__
-	std::array<IntersectionResult, 2> intersect(Ray ray);
-	__device__
-	float3 calc_normal(float3 position);
-};
+	return plane;
+}
 
 __device__
 IntersectionResult Plane::intersect(Ray ray) {
-	IntersectionResult result {};
-	f32 t = dot_float3(add_float3(ray.origin, point), normal) / dot_float3(ray.direction,  normal);
-	result.t = t;
+	IntersectionResult result;
+	result.t = dot(normal, point - ray.origin) / dot(normal, ray.direction);
 	result.normal = normal;
-	result.intersected = t > 0.0f;
-	result.material = material;
+	result.position = ray.origin + result.t * ray.direction;
+	result.mat = material;
+	result.intersected = result.t > THRESHOLD;
 
 	return result;
 }
 
 __device__
-float3 Sphere::calc_normal(float3 position) {
-	float3 displacement = sub_float3(position, center);
-	return normalize(displacement);
-}
+Array<IntersectionResult, 2> Sphere::intersect(Ray ray) {
+	Array<IntersectionResult, 2> result;
+	result[0] = IntersectionResult{};
+	result[1] = IntersectionResult{};
 
-__device__
-std::array<IntersectionResult, 2> Sphere::intersect(Ray ray) {
-	IntersectionResult result0 {};
-	IntersectionResult result1 {};
 	f32 a = 1.0f;
-	f32 b = 2.0f*dot_float3(ray.direction, sub_float3(ray.origin, center));
-	f32 c = norm2(sub_float3(ray.origin, center)) - radius*radius;
+	f32 b = 2.0f * dot(ray.direction, ray.origin - center);
+	f32 c = norm2(ray.origin - center) - radius*radius;
 
-	if (b*b-4.0f*a*c < 0.0f) {
-		result0.intersected = false;
-		result1.intersected = false;
-	} else {
-		result0.intersected = true;
-		result0.material = material;
-		f32 t0 = (-b + sqrtf(b*b-4*a*c)) / (2.0f * a);
-		result0.t = t0;
-		float3 position0 = add_float3(ray.origin, scalar_mul(t0, ray.direction));
-		result0.normal = calc_normal(position0);
+	if (b*b - 4.0f*a*c >= 0.0f) {
+		f32 d = sqrtf(b*b-4*a*c);
+		result[0].t = (-b+d) / (2.0f*a);
+		result[0].intersected = result[0].t >= THRESHOLD;
+		result[0].position = ray.origin + result[0].t * ray.direction;
+		result[0].normal = (result[0].position - center).normalize();
+		result[0].mat = material;
 
-		result1.intersected = true;
-		result1.material = material;
-		f32 t1 = (-b - sqrtf(b*b-4*a*c)) / (2.0f * a);
-		result1.t = t1;
-		float3 position1 = add_float3(ray.origin, scalar_mul(t1, ray.direction));
-		result1.normal = calc_normal(position1);
+		result[1].t = (-b-d) / (2.0f*a);
+		result[1].intersected = result[1].t >= THRESHOLD;
+		result[1].position = ray.origin + result[1].t * ray.direction;
+		result[1].normal = (result[1].position - center).normalize();
+		result[1].mat = material;
 	}
 
-	std::array<IntersectionResult, 2> result {result0, result1};
 	return result;
 }
 
-constexpr u32 SAMPLES_PER_FRAME = 64;
-constexpr f32 SCALE = 1.0f;
-constexpr u64 SEED = 926831508;
+template<u32 SPHERE_COUNT, u32 PLANE_COUNT>
+struct Scene {
+	Sphere spheres[SPHERE_COUNT];
+	Plane planes[PLANE_COUNT];
+};
+
+struct Camera {
+	Vector<3> focal_point;
+	f32 focal_length;
+	Matrix<4> transform;
+
+	static Camera init(f32 focal_length, Vector<3> position, f32 yaw, f32 pitch, f32 roll, f32 scale);
+};
+
+Camera Camera::init(f32 focal_length, Vector<3> position, f32 yaw, f32 pitch, f32 roll, f32 scale) {
+	Camera camera;
+	camera.transform = translation_matrix(position) * rotation_matrix(yaw, pitch, roll) * scale_matrix(scale);
+	camera.focal_point = from_projective(camera.transform * to_projective(Vector<3>::init({0., 0., 0.})));
+	camera.focal_length = focal_length;
+	return camera;
+}
+
+constexpr u64 SEED = 10;
+constexpr u32 SAMPLES_PER_FRAME = 1;
+constexpr u32 SPHERE_COUNT = 2;
+constexpr u32 PLANE_COUNT = 1;
+constexpr u32 MAX_DEPTH = 10;
+constexpr f32 PI = 3.141592653589793;
+
+__constant__ Camera camera;
+__constant__ Scene<SPHERE_COUNT, PLANE_COUNT> scene;
+
+__device__
+Vector<3> path_trace(Ray const& ray, curandStateXORWOW_t* state) {
+	Ray r = ray;
+	Vector<3> result = Vector<3>::init({0.f, 0.f, 0.f});
+	f32 factor = 1.0f;
+	for (u32 i = 0; i < MAX_DEPTH; i++) {
+		IntersectionResult min_int {};
+		for (u32 i = 0; i < SPHERE_COUNT; i++) {
+			auto int_result = scene.spheres[i].intersect(r);
+			if (int_result[0].intersected && (!min_int.intersected || int_result[0].t < min_int.t)) {
+				min_int = int_result[0];
+			}
+
+			if (int_result[1].intersected && (!min_int.intersected || int_result[1].t < min_int.t)) {
+				min_int = int_result[1];
+			}
+		}
+
+		for (u32 i = 0; i < PLANE_COUNT; i++) {
+			auto int_result = scene.planes[i].intersect(r);
+			if (int_result.intersected && (!min_int.intersected || int_result.t < min_int.t)) {
+				min_int = int_result;
+			}
+		}
+
+		if (!min_int.intersected) {
+			return result;
+		}
+
+		result = result + factor * min_int.mat.emissivity * min_int.mat.color;
+		f32 theta = (PI / 2.f) * curand_uniform(state);
+		f32 phi = (2.0f * PI) * curand_uniform(state);
+		Vector<3> incoming = get_spherical_at(theta, phi, min_int.normal);
+		f32 brdf = 1.0f / PI;
+		factor *= brdf * dot(incoming, min_int.normal);
+		r = Ray::init(min_int.position, incoming);
+	}
+
+	return result;
+}
 
 __global__
-void draw(float* framebuffer, i32 width, i32 height, f32 samples_count) {
+void draw(float* __restrict__ framebuffer, i32 width, i32 height, f32 samples_count) {
 	curandStateXORWOW_t state;
 	curand_init(SEED + threadIdx.x + blockIdx.x * blockDim.x, 0, (u32) samples_count, &state);
 
@@ -331,12 +237,15 @@ void draw(float* framebuffer, i32 width, i32 height, f32 samples_count) {
 		i32 y_idx = i / width;
 		f32 screen_x = (f32) x_idx / width - .5;
 		f32 screen_y = (f32) y_idx / width - (f32) .5 * height / width;
-		// for (u32 i = 0; i < SAMPLES_PER_FRAME; i++) {
-		// }
+		Vector<3> screen_vector = Vector<3>::init({screen_x, screen_y, camera.focal_length});
+		screen_vector = from_projective(camera.transform * to_projective(screen_vector));
 
-		// framebuffer[3*i] = curand_uniform(&state);
-		// framebuffer[3*i+1] = curand_uniform(&state);
-		// framebuffer[3*i+2] = curand_uniform(&state);
+		Vector<3> direction = (screen_vector - camera.focal_point).normalize();
+		Ray ray = Ray::init(camera.focal_point, direction);
+		Vector<3> color = path_trace(ray, &state);
+		framebuffer[3*i] = (samples_count * framebuffer[3*i] + color[0]) / (samples_count + SAMPLES_PER_FRAME);
+		framebuffer[3*i+1] = (samples_count * framebuffer[3*i+1] + color[1]) / (samples_count + SAMPLES_PER_FRAME);
+		framebuffer[3*i+2] = (samples_count * framebuffer[3*i+2] + color[1]) / (samples_count + SAMPLES_PER_FRAME);
 	}
 }
 
@@ -361,11 +270,22 @@ int main() {
 
 	cudaSetDevice(device);
 
+	{
+		Camera camera_cpu = Camera::init(1.f, Vector<3>{0.f, 0.f, -3.f}, 0.1f, 0.f, 0.f, 1.f);
+		cudaMemcpyToSymbol(camera, &camera_cpu, sizeof(camera_cpu));
+
+		Scene<SPHERE_COUNT, PLANE_COUNT> scene_data;
+		scene_data.spheres[0] = Sphere::init(Vector<3>::init({0.f, 0.f, 4.0f}), 1.f, Material::init(0.f, Vector<3>::init({.9f, .4f, .9f})));
+		scene_data.spheres[1] = Sphere::init(Vector<3>::init({1.5f, .75f, 3.f}), .5f, Material::init(20.f, Vector<3>::init({1.f, 1.f, 1.f})));
+		scene_data.planes[0] = Plane::init(Vector<3>::init({0.f, -1.5f, 0.f}), Vector<3>::init({0.f, 1.f, 0.f}), Material::init(0.f, Vector<3>::init({1.f, 1.f, 1.f})));
+		cudaMemcpyToSymbol(scene, &scene_data, sizeof(scene_data));
+	}
+
 	glfwWindowHint(GLFW_CLIENT_API, GLFW_OPENGL_API);
 	glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 4);
 	glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 6);
 	glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
-	GLFWwindow* window = glfwCreateWindow(WIDTH, HEIGHT, "Cuda Sandbox", nullptr, nullptr);
+	GLFWwindow* window = glfwCreateWindow(WIDTH, HEIGHT, "Raytracer", nullptr, nullptr);
 	assert(window != nullptr);
 
 	WindowData window_data;
