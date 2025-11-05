@@ -177,7 +177,7 @@ Camera Camera::init(f32 focal_length, Vector<3> position, f32 yaw, f32 pitch, f3
 }
 
 constexpr u64 SEED = 10;
-constexpr u32 SAMPLES_PER_FRAME = 1;
+constexpr u32 SAMPLES_PER_FRAME = 5;
 constexpr u32 SPHERE_COUNT = 2;
 constexpr u32 PLANE_COUNT = 1;
 constexpr u32 MAX_DEPTH = 10;
@@ -242,10 +242,13 @@ void draw(float* __restrict__ framebuffer, i32 width, i32 height, f32 samples_co
 
 		Vector<3> direction = (screen_vector - camera.focal_point).normalize();
 		Ray ray = Ray::init(camera.focal_point, direction);
-		Vector<3> color = path_trace(ray, &state);
-		framebuffer[3*i] = (samples_count * framebuffer[3*i] + color[0]) / (samples_count + SAMPLES_PER_FRAME);
-		framebuffer[3*i+1] = (samples_count * framebuffer[3*i+1] + color[1]) / (samples_count + SAMPLES_PER_FRAME);
-		framebuffer[3*i+2] = (samples_count * framebuffer[3*i+2] + color[1]) / (samples_count + SAMPLES_PER_FRAME);
+		Vector<3> color{};
+		for (u32 j = 0; j < SAMPLES_PER_FRAME; j++) {
+			color = color + path_trace(ray, &state);
+		}
+		framebuffer[3*i] = 2.0f * PI * (samples_count * framebuffer[3*i] / (2.0f * PI) + color[0]) / (samples_count + SAMPLES_PER_FRAME);
+		framebuffer[3*i+1] = 2.0f * PI * (samples_count * framebuffer[3*i+1] / (2.0f * PI) + color[1]) / (samples_count + SAMPLES_PER_FRAME);
+		framebuffer[3*i+2] = 2.0f * PI * (samples_count * framebuffer[3*i+2] / (2.0f * PI) + color[1]) / (samples_count + SAMPLES_PER_FRAME);
 	}
 }
 
@@ -276,7 +279,7 @@ int main() {
 
 		Scene<SPHERE_COUNT, PLANE_COUNT> scene_data;
 		scene_data.spheres[0] = Sphere::init(Vector<3>::init({0.f, 0.f, 4.0f}), 1.f, Material::init(0.f, Vector<3>::init({.9f, .4f, .9f})));
-		scene_data.spheres[1] = Sphere::init(Vector<3>::init({1.5f, .75f, 3.f}), .5f, Material::init(20.f, Vector<3>::init({1.f, 1.f, 1.f})));
+		scene_data.spheres[1] = Sphere::init(Vector<3>::init({1.5f, .75f, 3.f}), .5f, Material::init(5.f, Vector<3>::init({1.f, 1.f, 1.f})));
 		scene_data.planes[0] = Plane::init(Vector<3>::init({0.f, -1.5f, 0.f}), Vector<3>::init({0.f, 1.f, 0.f}), Material::init(0.f, Vector<3>::init({1.f, 1.f, 1.f})));
 		cudaMemcpyToSymbol(scene, &scene_data, sizeof(scene_data));
 	}
@@ -332,7 +335,7 @@ int main() {
 		f32* pixel_buffer;
 		size_t resource_size;
 		panic_err(cudaGraphicsResourceGetMappedPointer((void**)&pixel_buffer, &resource_size, pbo_resource));
-		draw<<<32, 256>>>(pixel_buffer, window_data.framebuffer_width, window_data.framebuffer_height, samples_count);
+		draw<<<64, 256>>>(pixel_buffer, window_data.framebuffer_width, window_data.framebuffer_height, samples_count);
 
 		panic_err(cudaGraphicsUnmapResources(1, &pbo_resource, 0));
 
