@@ -52,6 +52,16 @@ struct Vector {
 		return result;
 	}
 
+	__device__
+	Vector<N> operator*(Vector<N> const& other) {
+		Vector<N> result;
+		for (u32 i = 0; i < N; i++) {
+			result[i] = data[i] * other.data[i];
+		}
+
+		return result;
+	}
+
 	template<u32 M>
 	__device__
 	friend Vector<M> operator*(f32 x, Vector<M> v);
