@@ -24,13 +24,13 @@ Vector<3> get_spherical_at(f32 theta, f32 phi, Vector<3> const& normal) {
 	f32 sincos = __sinf(theta) * __cosf(phi);
 	f32 sinsin = __sinf(theta) * __sinf(phi);
 	f32 cos = __cosf(theta);
-	f32 nx2 = norm2(n);
-	f32 ny2 = norm2(n);
+	f32 nx2 = n[0]*n[0];
+	f32 ny2 = n[1]*n[1];
 	f32 mnxny = -n[0] * n[1];
 	f32 factor = 1.f / (1.f + n[2]);
 
-	result[0] = n[2] * sincos + n[0] * cos + (ny2 * sincos - mnxny * sinsin) * factor;
-	result[1] = n[2] * sinsin + n[1] * cos + (nx2 * sinsin - mnxny * sincos) * factor;
+	result[0] = n[2] * sincos + n[0] * cos + (ny2 * sincos + mnxny * sinsin) * factor;
+	result[1] = n[2] * sinsin + n[1] * cos + (nx2 * sinsin + mnxny * sincos) * factor;
 	result[2] = n[2] * cos - n[0] * sincos - n[1] * sinsin;
 
 	// return result;
