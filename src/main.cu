@@ -53,9 +53,10 @@ Ray Ray::init(Vector<3> origin, Vector<3> direction) {
 
 struct Material {
 	f32 emissivity;
+	f32 albedo;
 	Vector<3> color;
 
-	static Material init(f32 emissivity, Vector<3> color);
+	static Material init(f32 emissivity, f32 albedo, Vector<3> color);
 };
 
 struct IntersectionResult {
@@ -66,10 +67,11 @@ struct IntersectionResult {
 	bool intersected;
 };
 
-Material Material::init(f32 emissivity, Vector<3> color) {
+Material Material::init(f32 emissivity, f32 albedo, Vector<3> color) {
 	Material material;
 	material.color = color;
 	material.emissivity = emissivity;
+	material.albedo = albedo;
 
 	return material;
 }
@@ -177,7 +179,7 @@ Camera Camera::init(f32 focal_length, Vector<3> position, f32 yaw, f32 pitch, f3
 }
 
 constexpr u64 SEED = 10;
-constexpr u32 SAMPLES_PER_FRAME = 5;
+constexpr u32 SAMPLES_PER_PIXEL = 10000;
 constexpr u32 SPHERE_COUNT = 2;
 constexpr u32 PLANE_COUNT = 1;
 constexpr u32 MAX_DEPTH = 10;
@@ -190,9 +192,9 @@ __device__
 Vector<3> path_trace(Ray const& ray, curandStateXORWOW_t* state) {
 	Ray r = ray;
 	Vector<3> result = Vector<3>::init({0.f, 0.f, 0.f});
-	f32 factor = 1.0f;
+	Vector<3> factor = Vector<3>::init({1.f, 1.f, 1.f});
 	for (u32 i = 0; i < MAX_DEPTH; i++) {
-		IntersectionResult min_int {};
+		IntersectionResult min_int{};
 		for (u32 i = 0; i < SPHERE_COUNT; i++) {
 			auto int_result = scene.spheres[i].intersect(r);
 			if (int_result[0].intersected && (!min_int.intersected || int_result[0].t < min_int.t)) {
@@ -215,12 +217,13 @@ Vector<3> path_trace(Ray const& ray, curandStateXORWOW_t* state) {
 			return result;
 		}
 
-		result = result + factor * min_int.mat.emissivity * min_int.mat.color;
+		result = result + min_int.mat.emissivity * factor * min_int.mat.color;
 		f32 theta = (PI / 2.f) * curand_uniform(state);
 		f32 phi = (2.0f * PI) * curand_uniform(state);
 		Vector<3> incoming = get_spherical_at(theta, phi, min_int.normal);
-		f32 brdf = 1.0f / PI;
-		factor *= brdf * dot(incoming, min_int.normal);
+		Vector<3> brdf = (1.0f / PI) * min_int.mat.color;
+		f32 cos_theta = __saturatef(dot(incoming, min_int.normal));
+		factor = 2.0f * PI * min_int.mat.albedo * cos_theta * brdf * factor;
 		r = Ray::init(min_int.position, incoming);
 	}
 
@@ -242,13 +245,14 @@ void draw(float* __restrict__ framebuffer, i32 width, i32 height, f32 samples_co
 
 		Vector<3> direction = (screen_vector - camera.focal_point).normalize();
 		Ray ray = Ray::init(camera.focal_point, direction);
-		Vector<3> color{};
-		for (u32 j = 0; j < SAMPLES_PER_FRAME; j++) {
+		Vector<3> color = Vector<3>::init({0.f, 0.f, 0.f});
+		for (u32 j = 0; j < SAMPLES_PER_PIXEL; j++) {
 			color = color + path_trace(ray, &state);
 		}
-		framebuffer[3*i] = 2.0f * PI * (samples_count * framebuffer[3*i] / (2.0f * PI) + color[0]) / (samples_count + SAMPLES_PER_FRAME);
-		framebuffer[3*i+1] = 2.0f * PI * (samples_count * framebuffer[3*i+1] / (2.0f * PI) + color[1]) / (samples_count + SAMPLES_PER_FRAME);
-		framebuffer[3*i+2] = 2.0f * PI * (samples_count * framebuffer[3*i+2] / (2.0f * PI) + color[1]) / (samples_count + SAMPLES_PER_FRAME);
+
+		framebuffer[3*i] = (samples_count * framebuffer[3*i] + color[0]) / (samples_count + SAMPLES_PER_PIXEL);
+		framebuffer[3*i+1] = (samples_count * framebuffer[3*i+1] + color[1]) / (samples_count + SAMPLES_PER_PIXEL);
+		framebuffer[3*i+2] = (samples_count * framebuffer[3*i+2] + color[2]) / (samples_count + SAMPLES_PER_PIXEL);
 	}
 }
 
@@ -278,9 +282,9 @@ int main() {
 		cudaMemcpyToSymbol(camera, &camera_cpu, sizeof(camera_cpu));
 
 		Scene<SPHERE_COUNT, PLANE_COUNT> scene_data;
-		scene_data.spheres[0] = Sphere::init(Vector<3>::init({0.f, 0.f, 4.0f}), 1.f, Material::init(0.f, Vector<3>::init({.9f, .4f, .9f})));
-		scene_data.spheres[1] = Sphere::init(Vector<3>::init({1.5f, .75f, 3.f}), .5f, Material::init(5.f, Vector<3>::init({1.f, 1.f, 1.f})));
-		scene_data.planes[0] = Plane::init(Vector<3>::init({0.f, -1.5f, 0.f}), Vector<3>::init({0.f, 1.f, 0.f}), Material::init(0.f, Vector<3>::init({1.f, 1.f, 1.f})));
+		scene_data.spheres[0] = Sphere::init(Vector<3>::init({0.f, 0.f, 4.0f}), 1.f, Material::init(0.f, .9f, Vector<3>::init({1.f, 1.f, 1.f})));
+		scene_data.spheres[1] = Sphere::init(Vector<3>::init({5.5f, .5f, 4.f}), 1.2f, Material::init(40.f, 0.f, Vector<3>::init({1.f, 1.f, 1.f})));
+		scene_data.planes[0] = Plane::init(Vector<3>::init({0.f, -1.5f, 0.f}), Vector<3>::init({0.f, 1.f, 0.f}), Material::init(0.f, .5f, Vector<3>::init({1.f, 1.f, 1.f})));
 		cudaMemcpyToSymbol(scene, &scene_data, sizeof(scene_data));
 	}
 
@@ -326,18 +330,18 @@ int main() {
 
 	f32 delta = 0.0f;
 	f32 samples_count = 0.0f;
+
+	panic_err(cudaGraphicsMapResources(1, &pbo_resource, 0));
+
+	f32* pixel_buffer;
+	size_t resource_size;
+	panic_err(cudaGraphicsResourceGetMappedPointer((void**)&pixel_buffer, &resource_size, pbo_resource));
+	draw<<<64, 256>>>(pixel_buffer, window_data.framebuffer_width, window_data.framebuffer_height, samples_count);
+
+	panic_err(cudaGraphicsUnmapResources(1, &pbo_resource, 0));
 	while (!glfwWindowShouldClose(window)) {
 		auto start = glfwGetTime();
 		glfwPollEvents();
-
-		panic_err(cudaGraphicsMapResources(1, &pbo_resource, 0));
-
-		f32* pixel_buffer;
-		size_t resource_size;
-		panic_err(cudaGraphicsResourceGetMappedPointer((void**)&pixel_buffer, &resource_size, pbo_resource));
-		draw<<<64, 256>>>(pixel_buffer, window_data.framebuffer_width, window_data.framebuffer_height, samples_count);
-
-		panic_err(cudaGraphicsUnmapResources(1, &pbo_resource, 0));
 
 		glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
 		glClear(GL_COLOR_BUFFER_BIT);
@@ -356,8 +360,8 @@ int main() {
 
 		glfwSwapBuffers(window);
 		delta = glfwGetTime() - start;
-		log(LogLevel::DEBUG, "%fms\n", 1e3*delta);
-		samples_count += SAMPLES_PER_FRAME;
+		log(LogLevel::INFO, "%fms\n", 1e3*delta);
+		samples_count += SAMPLES_PER_PIXEL;
 	}
 
 	glfwDestroyWindow(window);
