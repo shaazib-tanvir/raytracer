@@ -179,7 +179,7 @@ Camera Camera::init(f32 focal_length, Vector<3> position, f32 yaw, f32 pitch, f3
 }
 
 constexpr u64 SEED = 10;
-constexpr u32 SAMPLES_PER_PIXEL = 10000;
+constexpr u32 SAMPLES_PER_PIXEL = 1000;
 constexpr u32 SPHERE_COUNT = 2;
 constexpr u32 PLANE_COUNT = 1;
 constexpr u32 MAX_DEPTH = 10;
@@ -231,9 +231,9 @@ Vector<3> path_trace(Ray const& ray, curandStateXORWOW_t* state) {
 }
 
 __global__
-void draw(float* __restrict__ framebuffer, i32 width, i32 height, f32 samples_count) {
+void draw(float* __restrict__ framebuffer, i32 width, i32 height) {
 	curandStateXORWOW_t state;
-	curand_init(SEED + threadIdx.x + blockIdx.x * blockDim.x, 0, (u32) samples_count, &state);
+	curand_init(SEED + threadIdx.x + blockIdx.x * blockDim.x, 0, 0, &state);
 
 	for (u32 i = threadIdx.x + blockIdx.x * blockDim.x; i < width * height; i += blockDim.x * gridDim.x) {
 		i32 x_idx = i % width;
@@ -250,9 +250,9 @@ void draw(float* __restrict__ framebuffer, i32 width, i32 height, f32 samples_co
 			color = color + path_trace(ray, &state);
 		}
 
-		framebuffer[3*i] = (samples_count * framebuffer[3*i] + color[0]) / (samples_count + SAMPLES_PER_PIXEL);
-		framebuffer[3*i+1] = (samples_count * framebuffer[3*i+1] + color[1]) / (samples_count + SAMPLES_PER_PIXEL);
-		framebuffer[3*i+2] = (samples_count * framebuffer[3*i+2] + color[2]) / (samples_count + SAMPLES_PER_PIXEL);
+		framebuffer[3*i] = (framebuffer[3*i] + color[0]) / SAMPLES_PER_PIXEL;
+		framebuffer[3*i+1] = (framebuffer[3*i+1] + color[1]) / SAMPLES_PER_PIXEL;
+		framebuffer[3*i+2] = (framebuffer[3*i+2] + color[2]) / SAMPLES_PER_PIXEL;
 	}
 }
 
@@ -283,7 +283,7 @@ int main() {
 
 		Scene<SPHERE_COUNT, PLANE_COUNT> scene_data;
 		scene_data.spheres[0] = Sphere::init(Vector<3>::init({0.f, 0.f, 4.0f}), 1.f, Material::init(0.f, .9f, Vector<3>::init({1.f, 1.f, 1.f})));
-		scene_data.spheres[1] = Sphere::init(Vector<3>::init({5.5f, .5f, 4.f}), 1.2f, Material::init(40.f, 0.f, Vector<3>::init({1.f, 1.f, 1.f})));
+		scene_data.spheres[1] = Sphere::init(Vector<3>::init({5.5f, 4.5f, 4.f}), 1.2f, Material::init(60.f, 0.f, Vector<3>::init({1.f, 1.f, 1.f})));
 		scene_data.planes[0] = Plane::init(Vector<3>::init({0.f, -1.5f, 0.f}), Vector<3>::init({0.f, 1.f, 0.f}), Material::init(0.f, .5f, Vector<3>::init({1.f, 1.f, 1.f})));
 		cudaMemcpyToSymbol(scene, &scene_data, sizeof(scene_data));
 	}
@@ -329,16 +329,16 @@ int main() {
 	glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
 	f32 delta = 0.0f;
-	f32 samples_count = 0.0f;
 
 	panic_err(cudaGraphicsMapResources(1, &pbo_resource, 0));
 
 	f32* pixel_buffer;
 	size_t resource_size;
 	panic_err(cudaGraphicsResourceGetMappedPointer((void**)&pixel_buffer, &resource_size, pbo_resource));
-	draw<<<64, 256>>>(pixel_buffer, window_data.framebuffer_width, window_data.framebuffer_height, samples_count);
+	draw<<<64, 256>>>(pixel_buffer, window_data.framebuffer_width, window_data.framebuffer_height);
 
 	panic_err(cudaGraphicsUnmapResources(1, &pbo_resource, 0));
+
 	while (!glfwWindowShouldClose(window)) {
 		auto start = glfwGetTime();
 		glfwPollEvents();
@@ -361,7 +361,6 @@ int main() {
 		glfwSwapBuffers(window);
 		delta = glfwGetTime() - start;
 		log(LogLevel::INFO, "%fms\n", 1e3*delta);
-		samples_count += SAMPLES_PER_PIXEL;
 	}
 
 	glfwDestroyWindow(window);
